@@ -2,7 +2,7 @@
 
 This is a stub mirror. The full source code for this commit is at:
 
-https://git.bitcicle.com/andy/pomo/src/commit/6f8c1e4ef60e15e3aa4419982ed99854a2ad1150
+https://git.bitcicle.com/andy/pomo/src/commit/993a6ef95d83b37171167cffdb4be402e8a564c7
 
 To browse or clone the full repository, visit:
 
