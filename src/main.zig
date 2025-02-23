@@ -8,6 +8,7 @@ const font = @import("font.zig");
 const Timer = struct {
     const MAX = (99 * std.time.s_per_hour) + (59 * std.time.s_per_min) + 59;
     duration: i64,
+    remaining: i64,
     expires: i64,
     buf: [9]u8,
 
@@ -18,6 +19,7 @@ const Timer = struct {
 
     running: bool,
     started: ?i64,
+    force_redraw: bool,
 
     pub fn init(duration_sec: i64) !Timer {
         if (duration_sec > Timer.MAX) return error.TooLarge;
@@ -28,6 +30,7 @@ const Timer = struct {
         // zig fmt: off
         var timer = Timer{
             .duration = duration_ms,
+            .remaining = duration_ms,
             .expires = expires,
             .buf = std.mem.zeroes([9]u8),
 
@@ -37,6 +40,7 @@ const Timer = struct {
 
             .running = false,
             .started = null,
+            .force_redraw = false,
         };
         // zig fmt: on
 
@@ -46,37 +50,60 @@ const Timer = struct {
     }
 
     pub fn start(self: *Timer) void {
-        if (!self.running) {
+        if (!self.running and !self.expired()) {
             self.started = std.time.milliTimestamp();
             self.running = true;
+            self.force_redraw = true;
         }
     }
 
     pub fn pause(self: *Timer) void {
         self.running = false;
+        self.force_redraw = true;
+    }
+
+    pub fn expired(self: *const Timer) bool {
+        return self.expires <= std.time.milliTimestamp();
+    }
+
+    pub fn reset(self: *Timer) void {
+        self.running = false;
+        self.remaining = self.duration;
+        const now = std.time.milliTimestamp();
+        self.expires = now + self.duration;
+        self.force_redraw = true;
     }
 
     pub fn update(self: *Timer) bool {
         if (!self.running) {
+            if (self.force_redraw) {
+                return self.update_digits();
+            }
             return false;
         }
 
         if (self.started) |started| {
-            self.expires = started + self.duration;
+            self.expires = started + self.remaining;
             self.started = null;
         }
 
         const now = std.time.milliTimestamp();
 
-        self.duration = self.expires - now;
+        self.remaining = self.expires - now;
+        if (self.remaining < 0) {
+            self.remaining = 0;
+            self.running = false;
+        }
 
         return self.update_digits();
     }
 
     fn update_digits(self: *Timer) bool {
+        self.force_redraw = false;
+
         var updated = false;
 
-        var dur: u64 = @intCast(self.duration);
+        var dur: u64 = @intCast(self.remaining);
 
         // If we're tracking hours, update the hour counter
         if (self.hours) |*h| {
@@ -208,6 +235,10 @@ const App = struct {
                         self.timer.start();
                     }
                 }
+
+                if (key.matches('r', .{})) {
+                    self.timer.reset();
+                }
             },
             .winsize => |ws| try self.vx.resize(self.allocator, self.tty.anyWriter(), ws),
             else => {},
@@ -258,7 +289,7 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    var app = try App.init(allocator, 3601);
+    var app = try App.init(allocator, 5);
     defer app.deinit();
 
     try app.run();
