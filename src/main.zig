@@ -3,113 +3,252 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 
-/// Our main application state
-const Model = struct {
-    /// State of the counter
-    count: u32 = 0,
-    /// The button. This widget is stateful and must live between frames
-    button: vxfw.Button,
+const font = @import("font.zig");
 
-    /// Helper function to return a vxfw.Widget struct
-    pub fn widget(self: *Model) vxfw.Widget {
-        return .{
-            .userdata = self,
-            .eventHandler = Model.typeErasedEventHandler,
-            .drawFn = Model.typeErasedDrawFn,
+const Timer = struct {
+    const MAX = (99 * std.time.s_per_hour) + (59 * std.time.s_per_min) + 59;
+    duration: i64,
+    expires: i64,
+    buf: [9]u8,
+
+    // These let us remember the length of a timer without changing the width
+    hours: ?u64,
+    minutes: ?u64,
+    seconds: u64,
+
+    running: bool,
+    started: ?i64,
+
+    pub fn init(duration_sec: i64) !Timer {
+        if (duration_sec > Timer.MAX) return error.TooLarge;
+        const now = std.time.milliTimestamp();
+        const duration_ms = (duration_sec * std.time.ms_per_s);
+        const expires = now + duration_ms;
+
+        // zig fmt: off
+        var timer = Timer{
+            .duration = duration_ms,
+            .expires = expires,
+            .buf = std.mem.zeroes([9]u8),
+
+            .hours = if (duration_sec >= std.time.s_per_hour) 0 else null,
+            .minutes = if (duration_sec >= std.time.s_per_min) 0 else null,
+            .seconds = @intCast(duration_sec),
+
+            .running = false,
+            .started = null,
         };
+        // zig fmt: on
+
+        _ = timer.update_digits();
+
+        return timer;
     }
 
-    /// This function will be called from the vxfw runtime.
-    fn typeErasedEventHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
-        const self: *Model = @ptrCast(@alignCast(ptr));
+    pub fn start(self: *Timer) void {
+        if (!self.running) {
+            self.started = std.time.milliTimestamp();
+            self.running = true;
+        }
+    }
+
+    pub fn pause(self: *Timer) void {
+        self.running = false;
+    }
+
+    pub fn update(self: *Timer) bool {
+        if (!self.running) {
+            return false;
+        }
+
+        if (self.started) |started| {
+            self.expires = started + self.duration;
+            self.started = null;
+        }
+
+        const now = std.time.milliTimestamp();
+
+        self.duration = self.expires - now;
+
+        return self.update_digits();
+    }
+
+    fn update_digits(self: *Timer) bool {
+        var updated = false;
+
+        var dur: u64 = @intCast(self.duration);
+
+        // If we're tracking hours, update the hour counter
+        if (self.hours) |*h| {
+            const hours = @divTrunc(dur, std.time.ms_per_hour);
+            dur = @rem(dur, std.time.ms_per_hour);
+
+            if (h.* != hours) {
+                h.* = hours;
+                updated = true;
+            }
+        }
+
+        // If we're tracking minutes, update the minute counter
+        if (self.minutes) |*m| {
+            const minutes = @divTrunc(dur, std.time.ms_per_min);
+            dur = @rem(dur, std.time.ms_per_min);
+            if (m.* != minutes) {
+                m.* = minutes;
+                updated = true;
+            }
+        }
+
+        const seconds = @divTrunc(dur, std.time.ms_per_s);
+        if (self.seconds != seconds) {
+            self.seconds = seconds;
+            updated = true;
+        }
+
+        return updated;
+    }
+
+    pub fn display(self: *Timer) ![]const u8 {
+        if (self.hours) |hours| {
+            if (self.minutes) |minutes| {
+                // zig fmt: off
+                return try std.fmt.bufPrint(
+                    &self.buf,
+                    "{d:0>2}:{d:0>2}:{d:0>2}",
+                    .{ hours, minutes, self.seconds }
+                );
+                // zig fmt: on
+            } else {
+                @panic("Having hours but no minutes is not possible");
+            }
+        } else if (self.minutes) |minutes| {
+            // zig fmt: off
+            return try std.fmt.bufPrint(
+                &self.buf,
+                "{d:0>2}:{d:0>2}",
+                .{ minutes, self.seconds }
+            );
+            // zig fmt: on
+        } else {
+            // zig fmt: off
+            return try std.fmt.bufPrint(
+                &self.buf,
+                "{d:0>2}",
+                .{ self.seconds }
+            );
+            // zig fmt: on
+        }
+    }
+};
+
+// This can contain internal events as well as Vaxis events.
+// Internal events can be posted into the same queue as vaxis events to allow
+// for a single event loop with exhaustive switching. Booya
+const Event = union(enum) { key_press: vaxis.Key, winsize: vaxis.Winsize, time };
+
+const App = struct {
+    allocator: std.mem.Allocator,
+    should_quit: bool,
+    tty: vaxis.Tty,
+    vx: vaxis.Vaxis,
+    timer: Timer,
+
+    pub fn init(allocator: std.mem.Allocator, duration: i64) !App {
+        return .{ .allocator = allocator, .should_quit = false, .tty = try vaxis.Tty.init(), .vx = try vaxis.init(allocator, .{}), .timer = try Timer.init(duration) };
+    }
+
+    pub fn deinit(self: *App) void {
+        self.vx.deinit(self.allocator, self.tty.anyWriter());
+        self.tty.deinit();
+    }
+
+    pub fn run(self: *App) !void {
+        var loop: vaxis.Loop(Event) = .{
+            .tty = &self.tty,
+            .vaxis = &self.vx,
+        };
+        try loop.init();
+
+        try loop.start();
+        defer loop.stop();
+
+        try self.vx.enterAltScreen(self.tty.anyWriter());
+
+        try self.vx.queryTerminal(self.tty.anyWriter(), 1 * std.time.ns_per_s);
+
+        while (!self.should_quit) {
+            if (self.timer.update()) {
+                loop.postEvent(.time);
+            }
+
+            const event = loop.tryEvent();
+
+            if (event) |e| {
+                try self.update(e);
+                try self.draw();
+            }
+
+            std.time.sleep(100 * std.time.ns_per_ms);
+        }
+    }
+
+    fn update(self: *App, event: Event) !void {
         switch (event) {
-            // The root widget is always sent an init event as the first event. Users of the
-            // library can also send this event to other widgets they create if they need to do
-            // some initialization.
-            .init => return ctx.requestFocus(self.button.widget()),
             .key_press => |key| {
-                if (key.matches('c', .{ .ctrl = true })) {
-                    ctx.quit = true;
-                    return;
+                if (key.matches('c', .{ .ctrl = true }) or
+                    key.matches(vaxis.Key.escape, .{}))
+                {
+                    self.should_quit = true;
+                }
+
+                if (key.matches(vaxis.Key.space, .{})) {
+                    if (self.timer.running) {
+                        self.timer.pause();
+                    } else {
+                        self.timer.start();
+                    }
                 }
             },
-            // We can request a specific widget gets focus. In this case, we always want to focus
-            // our button. Having focus means that key events will be sent up the widget tree to
-            // the focused widget, and then bubble back down the tree to the root. Users can tell
-            // the runtime the event was handled and the capture or bubble phase will stop
-            .focus_in => return ctx.requestFocus(self.button.widget()),
+            .winsize => |ws| try self.vx.resize(self.allocator, self.tty.anyWriter(), ws),
             else => {},
         }
     }
 
-    /// This function is called from the vxfw runtime. It will be called on a regular interval, and
-    /// only when any event handler has marked the redraw flag in EventContext as true. By
-    /// explicitly requiring setting the redraw flag, vxfw can prevent excessive redraws for events
-    /// which don't change state (ie mouse motion, unhandled key events, etc)
-    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const self: *Model = @ptrCast(@alignCast(ptr));
-        // The DrawContext is inspired from Flutter. Each widget will receive a minimum and maximum
-        // constraint. The minimum constraint will always be set, even if it is set to 0x0. The
-        // maximum constraint can have null width and/or height - meaning there is no constraint in
-        // that direction and the widget should take up as much space as it needs. By calling size()
-        // on the max, we assert that it has some constrained size. This is *always* the case for
-        // the root widget - the maximum size will always be the size of the terminal screen.
-        const max_size = ctx.max.size();
-
-        // The DrawContext also contains an arena allocator that can be used for each frame. The
-        // lifetime of this allocation is until the next time we draw a frame. This is useful for
-        // temporary allocations such as the one below: we have an integer we want to print as text.
-        // We can safely allocate this with the ctx arena since we only need it for this frame.
-        if (self.count > 0) {
-            self.button.label = try std.fmt.allocPrint(ctx.arena, "Clicks: {d}", .{self.count});
-        } else {
-            self.button.label = "Click me!";
-        }
-
-        // Each widget returns a Surface from it's draw function. A Surface contains the rectangular
-        // area of the widget, as well as some information about the surface or widget: can we focus
-        // it? does it handle the mouse?
-        //
-        // It DOES NOT contain the location it should be within it's parent. Only the parent can set
-        // this via a SubSurface. Here, we will return a Surface for the root widget (Model), which
-        // has two SubSurfaces: one for the text and one for the button. A SubSurface is a Surface
-        // with an offset and a z-index - the offset can be negative. This lets a parent draw a
-        // child and place it within itself
-        const button_child: vxfw.SubSurface = .{
-            .origin = .{ .row = 0, .col = 0 },
-            .surface = try self.button.draw(ctx.withConstraints(
-                ctx.min,
-                // Here we explicitly set a new maximum size constraint for the Button. A Button will
-                // expand to fill it's area and must have some hard limit in the maximum constraint
-                .{ .width = 16, .height = 3 },
-            )),
+    fn draw(self: *App) !void {
+        const style: vaxis.Style = .{
+            .fg = .{ .index = 1 },
         };
 
-        // We also can use our arena to allocate the slice for our SubSurfaces. This slice only
-        // needs to live until the next frame, making this safe.
-        const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-        children[0] = button_child;
+        const win = self.vx.window();
+        // Note, win.clear(), just calls `win.fill(.{.default = true})`
+        // win.fill(.{ .style = style });
+        win.clear();
 
-        return .{
-            // A Surface must have a size. Our root widget is the size of the screen
-            .size = max_size,
-            .widget = self.widget(),
-            .focusable = false,
-            // We didn't actually need to draw anything for the root. In this case, we can set
-            // buffer to a zero length slice. If this slice is *not zero length*, the runtime will
-            // assert that it's length is equal to the size.width * size.height.
-            .buffer = &.{},
-            .children = children,
+        try self.vx.setTitle(self.tty.anyWriter(), "Pomo");
+        self.vx.setMouseShape(.default);
+
+        // Create a bordered child window
+        const child = win.child(.{
+            .x_off = win.width / 2 - 20,
+            .y_off = win.height / 2 - 12,
+            .width = 40,
+            .height = 24,
+            .border = .{
+                .where = .all,
+                .style = style,
+            },
+        });
+
+        // Create the countdown clock text
+        const segment: vaxis.Segment = .{
+            .text = try self.timer.display(),
+            .style = style,
         };
-    }
+        // Center the countdown clock text
+        const center = vaxis.widgets.alignment.center(child, 28, 4);
+        _ = center.printSegment(segment, .{ .wrap = .grapheme });
 
-    /// The onClick callback for our button. This is also called if we press enter while the button
-    /// has focus
-    fn onClick(maybe_ptr: ?*anyopaque, ctx: *vxfw.EventContext) anyerror!void {
-        const ptr = maybe_ptr orelse return;
-        const self: *Model = @ptrCast(@alignCast(ptr));
-        self.count +|= 1;
-        return ctx.consumeAndRedraw();
+        try self.vx.render(self.tty.anyWriter());
     }
 };
 
@@ -119,23 +258,8 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    var app = try vxfw.App.init(allocator);
+    var app = try App.init(allocator, 3601);
     defer app.deinit();
 
-    // We heap allocate our model because we will require a stable pointer to it in our Button
-    // widget
-    const model = try allocator.create(Model);
-    defer allocator.destroy(model);
-
-    // Set the initial state of our button
-    model.* = .{
-        .count = 0,
-        .button = .{
-            .label = "Click me!",
-            .onClick = Model.onClick,
-            .userdata = model,
-        },
-    };
-
-    try app.run(model.widget(), .{});
+    try app.run();
 }
