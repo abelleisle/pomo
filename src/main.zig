@@ -6,6 +6,8 @@ const vxfw = vaxis.vxfw;
 const Timer = @import("Timer.zig");
 const font = @import("font.zig");
 
+const TIMES = enum(i64) { WORK = 1500, BREAK = 300 };
+
 // This can contain internal events as well as Vaxis events.
 // Internal events can be posted into the same queue as vaxis events to allow
 // for a single event loop with exhaustive switching. Booya
@@ -17,9 +19,10 @@ const App = struct {
     tty: vaxis.Tty,
     vx: vaxis.Vaxis,
     timer: Timer,
+    work: bool,
 
     pub fn init(allocator: std.mem.Allocator, duration: i64) !App {
-        return .{ .allocator = allocator, .should_quit = false, .tty = try vaxis.Tty.init(), .vx = try vaxis.init(allocator, .{}), .timer = try Timer.init(duration) };
+        return .{ .allocator = allocator, .should_quit = false, .tty = try vaxis.Tty.init(), .vx = try vaxis.init(allocator, .{}), .timer = try Timer.init(duration), .work = true };
     }
 
     pub fn deinit(self: *App) void {
@@ -43,6 +46,18 @@ const App = struct {
 
         while (!self.should_quit) {
             if (self.timer.update()) {
+                loop.postEvent(.time);
+            }
+
+            if (self.timer.expired()) {
+                try self.vx.notify(self.tty.anyWriter(), "Pomo", "Work timer complete!");
+
+                self.work = !self.work;
+                const dur: i64 = if (self.work)
+                    @intFromEnum(TIMES.WORK)
+                else
+                    @intFromEnum(TIMES.BREAK);
+                self.timer = try Timer.init(dur);
                 loop.postEvent(.time);
             }
 
@@ -84,8 +99,9 @@ const App = struct {
     }
 
     fn draw(self: *App) !void {
+        const index: u8 = if (self.work) 1 else 2;
         const style: vaxis.Style = .{
-            .fg = .{ .index = 1 },
+            .fg = .{ .index = index },
         };
 
         const win = self.vx.window();
@@ -96,21 +112,24 @@ const App = struct {
         try self.vx.setTitle(self.tty.anyWriter(), "Pomo");
         self.vx.setMouseShape(.default);
 
+        const displayed = try self.timer.display();
+        const wh: u16 = @intCast(font.medium.get_width(displayed));
+        const fh: u16 = @intCast(font.medium.get_height());
+
+        const child_width = wh + 4;
+        const child_height = fh + 4;
+
         // Create a bordered child window
         const child = win.child(.{
-            .x_off = win.width / 2 - 40,
-            .y_off = win.height / 2 - 22,
-            .width = 80,
-            .height = 44,
+            .x_off = win.width / 2 - (child_width / 2),
+            .y_off = win.height / 2 - (child_height / 2),
+            .width = child_width,
+            .height = child_height,
             .border = .{
                 .where = .all,
                 .style = style,
             },
         });
-
-        const displayed = try self.timer.display();
-        const wh: u16 = @intCast(font.medium.get_width(displayed));
-        const fh: u16 = @intCast(font.medium.get_height());
 
         const whh = @max(1, wh / 2);
         // const fhh = @max(1, fh / 2);
@@ -137,7 +156,7 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    var app = try App.init(allocator, 1500);
+    var app = try App.init(allocator, @intFromEnum(TIMES.WORK));
     defer app.deinit();
 
     try app.run();

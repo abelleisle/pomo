@@ -87,7 +87,7 @@ pub fn update(self: *Timer) bool {
     const now = std.time.milliTimestamp();
 
     self.remaining = self.expires - now;
-    if (self.remaining < 0) {
+    if (self.remaining <= 0) {
         self.remaining = 0;
         self.running = false;
     }

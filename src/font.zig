@@ -31,10 +31,10 @@ fn font(font_height: u32) type {
                     else => width += self.unknown.len - 1,
                 }
 
-                width += self.separator.len;
+                width += (self.separator.len - 1);
             }
 
-            width -= self.separator.len;
+            width -= (self.separator.len - 1);
 
             return width;
         }
