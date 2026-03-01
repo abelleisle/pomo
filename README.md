@@ -1,9 +1,15 @@
 # pomo
 
-This is a stub mirror. The full source code for this commit is at:
+This is a stub mirror. The source code lives on Forgejo.
 
-https://git.bitcicle.com/andy/pomo/src/commit/a5f1ed263c5bc1ffb377b0f498ef80f792ac988c
+**Repository:** https://git.bitcicle.com/andy/pomo
 
-To browse or clone the full repository, visit:
+## Branches
 
-https://git.bitcicle.com/andy/pomo
+| Branch | Commit | Link |
+|--------|--------|------|
+| `master` | `a5f1ed263c5b` | [view](https://git.bitcicle.com/andy/pomo/src/commit/a5f1ed263c5bc1ffb377b0f498ef80f792ac988c) |
+
+---
+
+*Last updated: 2026-03-01 18:43:19 UTC*
